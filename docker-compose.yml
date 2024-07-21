@@ -1,0 +1,22 @@
+version: "3.7"
+
+services:
+  splunk:
+    build:
+      dockerfile: ./docker/splunk/Dockerfile
+      context: ./
+      args:
+        - DOCKER_IMAGE=$DOCKER_IMAGE
+        - SPLUNK_VERSION=$SPLUNK_VERSION
+    ports:
+      - "8000" # Web UI
+      - "8088" # HEC
+      - "8089" # REST API
+    environment:
+      - SPLUNK_START_ARGS=--accept-license
+      - SPLUNK_PASSWORD=Chang3d!
+      - SPLUNK_HEC_TOKEN=abcd1234
+    volumes:
+      - "./output/TA-unifi-cloud:/opt/splunk/etc/apps/TA-unifi-cloud"
+      # - "./_submodules/0_cicd_base:/opt/splunk/etc/apps/0_cicd_base"
+

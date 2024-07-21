@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directories: 
+      - "/"
+      - "/package/lib/"
+    schedule:
+      interval: "daily"
+    groups:
+      splunk:
+        applies-to: version-updates
+        patterns:
+        - "splunk*"
