@@ -30,3 +30,5 @@ check_for_insecure_http_request_in_javascript:
     comment: 'Manual Check - To prevent insecure HTTP calls in JavaScript'
 check_for_insecure_http_calls_in_python:
     comment: 'Manual Check - To prevent insecure HTTP calls in Python'
+check_for_iframe_in_javascript:
+    comment: 'Manual Check - check_for_iframe_in_javascript'
