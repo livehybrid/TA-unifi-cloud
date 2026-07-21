@@ -34,6 +34,7 @@ splunk-ref-pas-code.iml
 
 out/
 output/
+stage/
 
 # RVM and rbenv
 /.rvmrc
