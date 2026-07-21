@@ -1,1 +1,11 @@
-splunk-add-on-ucc-framework==6.5.2
+#
+# Project-level requirements for building, testing and packaging TA-unifi-cloud.
+# splunk-sdk capped < 3.0.0 (3.0.0 is Python >= 3.13 only; the add-on builds and
+# runs on the Splunk 10 3.9 runtime too). Matches TA-airspace-watch / TA-uk-open-data.
+#
+splunk-add-on-ucc-framework>=6.0.0
+splunk-appinspect>=3.6.0
+requests>=2.32.0
+splunk-sdk>=2.0.2,<3.0.0
+splunktaucclib>=8.2.0
+solnlib>=5.5.0

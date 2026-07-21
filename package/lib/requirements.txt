@@ -1,3 +1,14 @@
-splunktaucclib==8.2.0
-splunk-sdk==3.0.0
-solnlib==8.1.0
+#
+# Runtime dependencies vendored into package/lib/ by ucc-gen at build time so the
+# modular inputs can import them inside Splunk's bundled Python.
+#
+# splunktaucclib >= 8.2.0 is required by the current ucc-gen (>=6.5.2); the old
+# ==8.0.0 pin broke `ucc-gen build`. splunk-sdk is capped < 3.0.0 because 3.0.0
+# requires Python >= 3.13 and would not install on the 3.9 build / break the
+# Splunk 10 3.9 runtime. This matches the set proven green on TA-airspace-watch /
+# TA-uk-open-data.
+#
+requests>=2.32.0,<3.0.0
+splunk-sdk>=2.0.2,<3.0.0
+splunktaucclib>=8.2.0
+solnlib>=5.5.0
