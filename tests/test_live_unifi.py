@@ -88,12 +88,13 @@ def unifi_input(splunk):
 
 
 def _upstream_error_logged(splunk):
-    # solnlib logs the input under $SPLUNK_HOME/var/log/splunk/ta-unifi-cloud_*.log,
-    # which splunkd monitors into _internal. The collector catches upstream
-    # failures and logs them, so an error here means "the input ran but api.ui.com
-    # was unreachable or rejected the key", not "our packaging is broken".
+    # solnlib names the per-input log after the STANZA, not the kind:
+    # $SPLUNK_HOME/var/log/splunk/ta-unifi-cloud_<stanza>.log, which splunkd
+    # monitors into _internal. The collector catches upstream failures and logs
+    # them, so an error here means "the input ran but api.ui.com was unreachable
+    # or rejected the key", not "our packaging is broken".
     spl = (
-        "search index=_internal source=*ta-unifi-cloud_unifi_collect_sites* "
+        f"search index=_internal source=*ta-unifi-cloud_{STANZA}* "
         '("Exception raised while ingesting" OR "ConnectionError" OR "Max retries" '
         'OR "Timeout" OR "Temporary failure in name resolution" '
         'OR "401" OR "403" OR "ERROR") '
