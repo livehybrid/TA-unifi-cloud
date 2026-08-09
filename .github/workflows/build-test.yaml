@@ -9,6 +9,7 @@ permissions:
   pull-requests: write
   actions: write
   checks: write
+  contents: write
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -17,6 +18,63 @@ jobs:
         uses: livehybrid/deploy-splunk-app-action@main
         with:
           python-version: "3.9"
+
+  integration-test:
+    name: integration-test (splunk-docker)
+    needs: package
+    # Dependabot actors get no egress/secrets, so the live Splunk E2E can only
+    # fail for them. CLI AppInspect still covers Dependabot PRs.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install UCC framework + pytest
+        run: pip install --upgrade splunk-add-on-ucc-framework pytest
+
+      - name: Build add-on into stage/
+        shell: bash
+        run: |
+          ucc-gen build --source package --ta-version 1.1.0
+          rm -rf stage && mkdir -p stage
+          cp -r output/TA-unifi-cloud stage/TA-unifi-cloud
+          # The test container's splunk user (a different uid) must read the app
+          # and write local/inputs.conf + checkpoints into the bind mount. Wide
+          # perms are fine on this throwaway copy — it is never the artefact.
+          chmod -R 777 stage/TA-unifi-cloud
+
+      - name: Start Splunk (wait for health)
+        working-directory: docker
+        run: docker compose up -d --wait --wait-timeout 360
+
+      - name: Run integration suite
+        env:
+          SPLUNK_MGMT_URL: https://127.0.0.1:8089
+          SPLUNK_USER: admin
+          SPLUNK_PASSWORD: Changeme1!
+          SPLUNK_CONTAINER: ta_unifi_cloud_splunk
+          # Keyed live ingestion (test_live_unifi.py) un-skips when this secret is
+          # set; deferred today per deploy-splunk-app-action#22 (E3a).
+          UNIFI_API_KEY: ${{ secrets.UNIFI_API_KEY }}
+        run: pytest tests/ -v -ra
+
+      - name: Splunk logs on failure
+        if: failure()
+        working-directory: docker
+        run: |
+          docker compose logs --tail 300 splunk || true
+          docker exec ta_unifi_cloud_splunk tail -n 300 /opt/splunk/var/log/splunk/splunkd.log || true
+
+      - name: Tear down
+        if: always()
+        working-directory: docker
+        run: docker compose down -v || true
 
   appinspect:
     name: quality-appinspect
@@ -35,10 +93,11 @@ jobs:
     secrets:
       splunkbase_username: ${{ secrets.SPLUNKBASE_USERNAME }}
       splunkbase_password: ${{ secrets.SPLUNKBASE_PASSWORD }}
-  
+
   publish-gh:
     permissions:
       contents: write
     needs:
       - appinspect
+      - integration-test
     uses: livehybrid/deploy-splunk-app-action/.github/workflows/publish.yml@main
