@@ -5,6 +5,11 @@ on:
       - "**"
     tags:
       - "v*.*.*"
+  workflow_dispatch: {}
+  schedule:
+    # Weekly real-API canary — the integration suite runs with the real
+    # UniFi key on this cadence without burning minutes on every push.
+    - cron: "47 6 * * 1"
 permissions:
   pull-requests: write
   actions: write
@@ -12,6 +17,9 @@ permissions:
   contents: write
 jobs:
   package:
+    # On the weekly schedule only the integration suite (with the real key)
+    # runs; skipping package makes its other dependents skip too.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Package app
@@ -21,7 +29,8 @@ jobs:
 
   integration-test:
     name: integration-test (splunk-docker)
-    needs: package
+    # No needs: on the weekly schedule this is the only job (it builds the
+    # add-on itself); on pushes it runs alongside package as before.
     # Dependabot actors get no egress/secrets, so the live Splunk E2E can only
     # fail for them. CLI AppInspect still covers Dependabot PRs.
     if: github.actor != 'dependabot[bot]'
@@ -53,15 +62,37 @@ jobs:
         working-directory: docker
         run: docker compose up -d --wait --wait-timeout 360
 
+      - name: Load UNIFI_API_KEY from 1Password
+        # Real-key runs are limited to the weekly schedule, manual dispatch,
+        # main pushes and tags — branch pushes stay keyless (the live test
+        # skips) so every push doesn't hit the real UniFi API.
+        if: >-
+          ${{ github.event_name == 'schedule' ||
+              github.event_name == 'workflow_dispatch' ||
+              github.ref == 'refs/heads/main' ||
+              startsWith(github.ref, 'refs/tags/') }}
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+            echo "OP_SERVICE_ACCOUNT_TOKEN unavailable — live test will skip." >&2
+            exit 0
+          fi
+          curl -sSfL https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -o /tmp/op.zip
+          (cd /tmp && unzip -oq op.zip op && sudo mv op /usr/local/bin/op)
+          KEY=$(op read "op://cicd/unify/password")
+          if [ -z "$KEY" ]; then echo "empty key from op" >&2; exit 1; fi
+          # op-loaded values are NOT auto-masked — mask before exporting.
+          echo "::add-mask::$KEY"
+          echo "UNIFI_API_KEY=$KEY" >> "$GITHUB_ENV"
+
       - name: Run integration suite
         env:
           SPLUNK_MGMT_URL: https://127.0.0.1:8089
           SPLUNK_USER: admin
           SPLUNK_PASSWORD: Changeme1!
           SPLUNK_CONTAINER: ta_unifi_cloud_splunk
-          # Keyed live ingestion (test_live_unifi.py) un-skips when this secret is
-          # set; deferred today per deploy-splunk-app-action#22 (E3a).
-          UNIFI_API_KEY: ${{ secrets.UNIFI_API_KEY }}
         run: pytest tests/ -v -ra
 
       - name: Splunk logs on failure
