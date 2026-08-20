@@ -51,6 +51,10 @@ def test_no_startup_import_or_init_errors(splunk):
         f"({input_clause} "
         '   OR (("ImportError" OR "ModuleNotFoundError" OR "Traceback") '
         f"       AND ({script_clause}))) "
+        # The live test's own probe input logs a teardown-window fetch error on
+        # a shared instance (account deleted before its final scheduled run);
+        # that is test noise, not an app startup failure.
+        'NOT source=*_probe.log '
         "earliest=-1h"
     )
     hits = splunk.search(spl, earliest="-1h")

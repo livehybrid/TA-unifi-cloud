@@ -9,10 +9,24 @@ valid scheme XML, independent of splunkd having scheduled them.
 from __future__ import annotations
 
 import re
+import shutil
 
 import pytest
 
-from conftest import docker_exec
+from conftest import CONTAINER, docker_exec
+
+
+def _container_reachable():
+    if not shutil.which("docker"):
+        return False
+    p = docker_exec("true", timeout=15)
+    return p[0] == 0
+
+
+pytestmark = pytest.mark.skipif(
+    not _container_reachable(),
+    reason=f"container {CONTAINER!r} not reachable (non-docker backend) — CI covers this tier",
+)
 
 APP = "TA-unifi-cloud"
 # script -> the scheme name (smi.Scheme(...)) each entrypoint emits. ucc-gen
