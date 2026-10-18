@@ -16,24 +16,25 @@ three modular inputs. A UniFi Cloud API key is required for all inputs.
 | Attribute | Value |
 |-----------|-------|
 | **Add-on version** | 1.1.0R5386590 |
-| **Tested against** | Splunk Enterprise 10.0, Python 3.9 (real Splunk in Docker, on every CI run) |
-| **Python runtime** | 3.9, Splunk's long-term-support runtime |
-| **Expected compatible** | Splunk Enterprise and Cloud 9.3+ and 10.x (any release on the Python 3.9 runtime) |
+| **Tested against** | Splunk Enterprise 10.0 (Python 3.9) and 10.6 (Python 3.13), real Splunk in Docker, on every CI run |
+| **Python runtime** | 3.13 on Splunk 10.2 and later, 3.9 on Splunk 10.1 and earlier |
+| **Expected compatible** | Splunk Enterprise and Cloud 9.3+ and 10.x |
 | **Deployment roles** | Standalone, Distributed, Search Head Clustering |
 | **AppInspect** | Passes the `cloud`, `future` and `private_victoria` tag sets |
 
-Splunk 9.3 through 10.1 default to Python 3.9, and 3.9 stays the LTS runtime on
-10.2 and later, so an add-on that is clean on 3.9 runs unchanged across that
-whole range. This add-on is validated on 3.9 and pins its vendored libraries to
-versions that stay 3.9-clean. It is not yet validated on the opt-in Python 3.13
-runtime introduced in Splunk 10.2.
+Splunk 10.2 and later ship Python 3.9 and 3.13 side by side; this add-on sets
+`python.required = 3.13`, so it runs on 3.13 there. Splunk 10.1 and earlier
+ignore `python.required` and run it on 3.9 (`python.version = python3`), so the
+code and vendored libraries stay 3.9-compatible (`requests < 2.33`,
+`splunk-sdk < 3`). CI runs the integration tests on Splunk 10.0 (Python 3.9)
+and 10.6 (Python 3.13) to hold both.
 
 ## Testing
 
 The add-on ships a real-Splunk integration harness under `docker/`
 (`make build up test down`): it installs the packaged add-on into Splunk 10 in
 Docker and asserts that the app installs and all three modular inputs register
-and expose their expected arguments on the Python 3.9 runtime. This harness
+and expose their expected arguments on both runtimes. This harness
 caught a Python 3.9 incompatibility in a vendored `requests` release (PEP 604
 `X | Y` type unions, which 3.9 rejects at import), now pinned out. The suite
 runs on every push via GitHub Actions.

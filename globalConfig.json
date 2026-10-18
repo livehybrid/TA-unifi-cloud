@@ -323,7 +323,7 @@
     "version": "1.1.0R5386590",
     "displayName": "Unifi Cloud Add-on for Splunk",
     "schemaVersion": "0.0.8",
-    "supportedPythonVersion": ["3.9"],
+    "supportedPythonVersion": ["3.13"],
     "supportedThemes": ["light", "dark"],
     "_uccVersion": "5.48.1"
   }
