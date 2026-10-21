@@ -43,7 +43,7 @@ jobs:
         splunk: ["10.0", "10.6.0"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python
         uses: actions/setup-python@v5
