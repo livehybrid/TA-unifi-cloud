@@ -14,6 +14,7 @@ INPUTS = (
     "unifi_collect_hosts",
     "unifi_collect_sites",
     "unifi_collect_devices",
+    "unifi_network",
 )
 
 
@@ -45,7 +46,7 @@ def test_no_startup_import_or_init_errors(splunk):
     # our scripts. Deliberately does NOT match runtime fetch errors (those are a
     # separate concern covered by the live test).
     input_clause = " OR ".join(f'"Unable to initialize modular input \\"{i}\\""' for i in INPUTS)
-    script_clause = " OR ".join(INPUTS + ("unifi_input_helper", "import_declare_test"))
+    script_clause = " OR ".join(INPUTS + ("unifi_input_helper", "unifi_network_helper", "unifi_client", "import_declare_test"))
     spl = (
         "search index=_internal log_level=ERROR "
         f"({input_clause} "

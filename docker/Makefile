@@ -16,13 +16,13 @@ CONTAINER  = ta_unifi_cloud_splunk
 APP        = TA-unifi-cloud
 REPO       = ..
 STAGE      = $(REPO)/stage/$(APP)
-TA_VERSION ?= 1.1.0
+TA_VERSION ?= 1.2.0
 
 export SPLUNK_MGMT_URL   ?= https://127.0.0.1:8089
 export SPLUNK_PASSWORD   ?= Changeme1!
 export SPLUNK_CONTAINER  ?= $(CONTAINER)
 
-.PHONY: build up down restart logs ps test all
+.PHONY: build certs up down restart logs ps test unit all
 
 build: ## Build the add-on into ../stage/TA-unifi-cloud
 	cd $(REPO) && ucc-gen build --source package --ta-version $(TA_VERSION)
@@ -31,6 +31,17 @@ build: ## Build the add-on into ../stage/TA-unifi-cloud
 	# Test container's splunk user (a different uid) must read the app and write
 	# local/inputs.conf + checkpoints. Wide perms are fine on a throwaway copy.
 	chmod -R 777 $(STAGE)
+	$(MAKE) certs
+
+certs: ## Throwaway self-signed certificate for the mock (CN/SAN mock)
+	mkdir -p $(REPO)/stage/certs
+	openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=mock \
+	  -addext subjectAltName=DNS:mock,DNS:localhost \
+	  -keyout $(REPO)/stage/certs/key.pem -out $(REPO)/stage/certs/cert.pem
+	chmod 644 $(REPO)/stage/certs/*.pem
+
+unit: ## Collector tests against the mock, no Splunk
+	cd $(REPO) && pytest tests/unit -v
 
 up: ## Start Splunk (detached) and block until healthy
 	$(COMPOSE) up -d --wait --wait-timeout 360
@@ -47,6 +58,6 @@ logs: ## Tail Splunk logs
 	$(COMPOSE) logs -f $(SERVICE)
 
 test: ## Run the integration suite against the running container
-	cd $(REPO) && pytest tests/ -v -ra
+	cd $(REPO) && pytest tests/ --ignore=tests/live -v -ra
 
 all: build up test down ## Full cycle: build, start, test, tear down

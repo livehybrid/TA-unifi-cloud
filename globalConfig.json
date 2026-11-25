@@ -5,11 +5,23 @@
         {
           "name": "account",
           "table": {
-            "actions": ["edit", "delete", "clone"],
+            "actions": [
+              "edit",
+              "delete",
+              "clone"
+            ],
             "header": [
               {
                 "label": "Name",
                 "field": "name"
+              },
+              {
+                "label": "Connection type",
+                "field": "connection_type"
+              },
+              {
+                "label": "Console URL",
+                "field": "url"
               }
             ]
           },
@@ -35,12 +47,54 @@
               "required": true
             },
             {
+              "type": "singleSelect",
+              "label": "Connection type",
+              "field": "connection_type",
+              "defaultValue": "cloud",
+              "required": true,
+              "options": {
+                "disableSearch": true,
+                "autoCompleteFields": [
+                  {
+                    "value": "cloud",
+                    "label": "Cloud (api.ui.com, Site Manager API key)"
+                  },
+                  {
+                    "value": "local",
+                    "label": "Local console (UniFi Network API key)"
+                  }
+                ]
+              },
+              "help": "Cloud reaches every console on the account through api.ui.com. Local talks to one console directly."
+            },
+            {
               "type": "text",
               "label": "API key",
               "field": "api_key",
-              "help": "API key",
+              "encrypted": true,
               "required": true,
-              "encrypted": true
+              "help": "Cloud: a Site Manager API key from unifi.ui.com. Local: a key from UniFi Network, Settings, Control Plane, Integrations."
+            },
+            {
+              "type": "text",
+              "label": "Console URL",
+              "field": "url",
+              "required": false,
+              "validators": [
+                {
+                  "type": "regex",
+                  "pattern": "^(https://[^\\s]+)?$",
+                  "errorMsg": "Enter an https:// URL, or leave empty for Cloud."
+                }
+              ],
+              "help": "Local: the console address, for example https://192.168.1.1. Cloud: leave empty (https://api.ui.com)."
+            },
+            {
+              "type": "checkbox",
+              "label": "Verify TLS certificate",
+              "field": "verify_ssl",
+              "defaultValue": true,
+              "help": "Untick only for a local console with a self-signed certificate."
             }
           ],
           "title": "Accounts"
@@ -83,7 +137,10 @@
               "defaultValue": "3600",
               "field": "interval",
               "options": {
-                "range": [300, 86400]
+                "range": [
+                  300,
+                  86400
+                ]
               },
               "help": "Time interval of the data input, in seconds.",
               "required": true
@@ -120,7 +177,7 @@
             }
           ],
           "inputHelperModule": "unifi_collect_hosts_helper",
-          "title": "Unifi - Collect hosts"
+          "title": "UniFi Site Manager - Collect hosts"
         },
         {
           "name": "unifi_collect_sites",
@@ -151,7 +208,10 @@
               "defaultValue": "3600",
               "field": "interval",
               "options": {
-                "range": [300, 86400]
+                "range": [
+                  300,
+                  86400
+                ]
               },
               "help": "Time interval of the data input, in seconds.",
               "required": true
@@ -188,7 +248,7 @@
             }
           ],
           "inputHelperModule": "unifi_collect_sites_helper",
-          "title": "Unifi - Collect Sites"
+          "title": "UniFi Site Manager - Collect Sites"
         },
         {
           "name": "unifi_collect_devices",
@@ -219,7 +279,10 @@
               "defaultValue": "3600",
               "field": "interval",
               "options": {
-                "range": [300, 86400]
+                "range": [
+                  300,
+                  86400
+                ]
               },
               "help": "Time interval of the data input, in seconds.",
               "required": true
@@ -256,13 +319,134 @@
             }
           ],
           "inputHelperModule": "unifi_collect_devices_helper",
-          "title": "Unifi - Collect Devices"
+          "title": "UniFi Site Manager - Collect Devices"
+        },
+        {
+          "name": "unifi_network",
+          "entity": [
+            {
+              "type": "text",
+              "label": "Name",
+              "validators": [
+                {
+                  "type": "regex",
+                  "errorMsg": "Input Name must begin with a letter and consist exclusively of alphanumeric characters and underscores.",
+                  "pattern": "^[a-zA-Z]\\w*$"
+                },
+                {
+                  "type": "string",
+                  "errorMsg": "Length of input name should be between 1 and 100",
+                  "minLength": 1,
+                  "maxLength": 100
+                }
+              ],
+              "field": "name",
+              "help": "A unique name for the data input.",
+              "required": true
+            },
+            {
+              "type": "interval",
+              "label": "Interval",
+              "defaultValue": "300",
+              "field": "interval",
+              "options": {
+                "range": [
+                  60,
+                  86400
+                ]
+              },
+              "help": "Time interval of the data input, in seconds.",
+              "required": true
+            },
+            {
+              "type": "singleSelect",
+              "label": "Account to use",
+              "options": {
+                "referenceName": "account"
+              },
+              "help": "Account to use for this input.",
+              "field": "account",
+              "required": true
+            },
+            {
+              "type": "multipleSelect",
+              "label": "Resources",
+              "field": "resources",
+              "required": true,
+              "defaultValue": "sites,devices,device_statistics,clients,networks,wifi_broadcasts,firewall_zones,firewall_policies",
+              "options": {
+                "delimiter": ",",
+                "items": [
+                  {
+                    "value": "sites",
+                    "label": "Sites"
+                  },
+                  {
+                    "value": "devices",
+                    "label": "Devices"
+                  },
+                  {
+                    "value": "device_statistics",
+                    "label": "Device statistics (one request per device)"
+                  },
+                  {
+                    "value": "clients",
+                    "label": "Clients"
+                  },
+                  {
+                    "value": "networks",
+                    "label": "Networks"
+                  },
+                  {
+                    "value": "wifi_broadcasts",
+                    "label": "Wi-Fi broadcasts"
+                  },
+                  {
+                    "value": "firewall_zones",
+                    "label": "Firewall zones"
+                  },
+                  {
+                    "value": "firewall_policies",
+                    "label": "Firewall policies"
+                  }
+                ]
+              },
+              "help": "What to collect on each run. Every run is a full snapshot. Endpoints a console does not support are skipped."
+            },
+            {
+              "type": "singleSelect",
+              "label": "Index",
+              "validators": [
+                {
+                  "type": "string",
+                  "errorMsg": "Length of index name should be between 1 and 80.",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              ],
+              "defaultValue": "default",
+              "options": {
+                "endpointUrl": "data/indexes",
+                "denyList": "^_.*$",
+                "createSearchChoice": true
+              },
+              "field": "index",
+              "required": true
+            }
+          ],
+          "inputHelperModule": "unifi_network_helper",
+          "title": "UniFi Network - Sites, devices, clients, Wi-Fi, firewall (Cloud or Local)"
         }
       ],
       "title": "Inputs",
       "description": "Manage your data inputs",
       "table": {
-        "actions": ["edit", "enable", "delete", "clone"],
+        "actions": [
+          "edit",
+          "enable",
+          "delete",
+          "clone"
+        ],
         "header": [
           {
             "label": "Name",
@@ -320,11 +504,16 @@
   "meta": {
     "name": "TA-unifi-cloud",
     "restRoot": "ta_unifi_cloud",
-    "version": "1.1.0R5386590",
+    "version": "1.2.0",
     "displayName": "Unifi Cloud Add-on for Splunk",
     "schemaVersion": "0.0.8",
-    "supportedPythonVersion": ["3.13"],
-    "supportedThemes": ["light", "dark"],
+    "supportedPythonVersion": [
+      "3.13"
+    ],
+    "supportedThemes": [
+      "light",
+      "dark"
+    ],
     "_uccVersion": "5.48.1"
   }
 }

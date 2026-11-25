@@ -45,3 +45,6 @@ src/*/local/*
 depsprivate/*
 
 package/local
+
+__pycache__/
+.pytest_cache/

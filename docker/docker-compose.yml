@@ -18,9 +18,33 @@ services:
       # the host updates the running container. The stage/ copy is a throwaway
       # test build (widened perms), never the packaged artefact.
       - ../stage/TA-unifi-cloud:/opt/splunk/etc/apps/TA-unifi-cloud
+    depends_on:
+      mock:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsk", "https://localhost:8089/services/server/info", "-u", "admin:${SPLUNK_PASSWORD:-Changeme1!}"]
       interval: 10s
       timeout: 5s
       retries: 40
       start_period: 30s
+
+  mock:
+    # Synthetic stand-in for api.ui.com and a local console (tests/mock), over
+    # HTTPS with a throwaway self-signed certificate made by `make certs` (or
+    # the CI step). No real account or network data. Accounts in the tests
+    # point at https://mock:8443 with TLS verification off, except the one that
+    # proves verification on rejects the self-signed certificate.
+    image: python:3.12-slim
+    container_name: ta_unifi_cloud_mock
+    hostname: mock
+    command: ["python", "/mock/unifi_mock.py", "--port", "8443", "--cert", "/certs/cert.pem", "--key", "/certs/key.pem"]
+    volumes:
+      - ../tests/mock:/mock:ro
+      - ../stage/certs:/certs:ro
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request;urllib.request.urlopen('https://localhost:8443/__mock/health',context=ssl._create_unverified_context(),timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20

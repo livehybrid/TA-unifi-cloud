@@ -49,6 +49,7 @@ EXPECTED_MODULAR_INPUTS = (
     "unifi_collect_hosts",
     "unifi_collect_sites",
     "unifi_collect_devices",
+    "unifi_network",
 )
 
 _CTX = ssl.create_default_context()
