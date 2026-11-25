@@ -159,7 +159,7 @@ jobs:
 
   live-local:
     # The add-on's collector against William's own console from a self-hosted
-    # runner on his LAN (n1001, label unifi-local), without Splunk: the full
+    # runner on his LAN (label unifi-local), without Splunk: the full
     # Splunk path is proven by integration-test (mock) and live-cloud. Same
     # event rules as live-cloud: never pull requests, never other branches.
     # live_local.py prints counts and field names only, never a traceback.
