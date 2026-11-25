@@ -97,7 +97,7 @@ jobs:
           SPLUNK_USER: admin
           SPLUNK_PASSWORD: Changeme1!
           SPLUNK_CONTAINER: ta_unifi_cloud_splunk
-        run: pytest tests/ --ignore=tests/live -v -ra -p no:cacheprovider
+        run: pytest tests/ --ignore=tests/live --ignore=tests/unit -v -ra -p no:cacheprovider
 
       - name: Splunk logs on failure
         # Mock data only: synthetic, safe to print.

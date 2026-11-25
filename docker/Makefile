@@ -58,6 +58,6 @@ logs: ## Tail Splunk logs
 	$(COMPOSE) logs -f $(SERVICE)
 
 test: ## Run the integration suite against the running container
-	cd $(REPO) && pytest tests/ --ignore=tests/live -v -ra
+	cd $(REPO) && pytest tests/ --ignore=tests/live --ignore=tests/unit -v -ra
 
 all: build up test down ## Full cycle: build, start, test, tear down
