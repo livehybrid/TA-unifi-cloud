@@ -75,9 +75,22 @@ def field_names(splunk, stanza, sourcetype):
 
 
 def statuses(splunk):
-    return splunk.search(
+    return [_dedupe(r) for r in splunk.search(
         f'search index={INDEX} source="unifi_network://live_network" sourcetype=unifi:network:status '
-        "| spath | table state sites unsupported{}", earliest="-2h", count=0)
+        "| spath | table state sites unsupported{}", earliest="-2h", count=0)]
+
+
+def _dedupe(row):
+    """KV_MODE=json and `| spath` both extract each field, so values arrive as
+    duplicated multivalues. Collapse them: a single distinct value becomes a
+    scalar, several stay a list."""
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, list):
+            uniq = list(dict.fromkeys(v))
+            v = uniq[0] if len(uniq) == 1 and not k.endswith("{}") else uniq
+        out[k] = v
+    return out
 
 
 def wait_stable(fn, ready, timeout=WAIT):

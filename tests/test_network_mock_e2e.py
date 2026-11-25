@@ -94,7 +94,20 @@ def statuses(splunk, stanza):
         f'search index={INDEX} source="unifi_network://{stanza}" sourcetype=unifi:network:status '
         "| spath | table console_id state error_code http_status unsupported{}",
         earliest="-1h")
-    return rows
+    return [_dedupe(r) for r in rows]
+
+
+def _dedupe(row):
+    """KV_MODE=json and `| spath` both extract each field, so values arrive as
+    duplicated multivalues. Collapse them: a single distinct value becomes a
+    scalar, several stay a list."""
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, list):
+            uniq = list(dict.fromkeys(v))
+            v = uniq[0] if len(uniq) == 1 and not k.endswith("{}") else uniq
+        out[k] = v
+    return out
 
 
 def wait_for(fn, done, timeout=WAIT, settle=2):
