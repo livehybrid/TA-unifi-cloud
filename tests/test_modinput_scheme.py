@@ -35,6 +35,7 @@ SCRIPTS = {
     "unifi_collect_hosts.py": "unifi_collect_hosts",
     "unifi_collect_sites.py": "unifi_collect_sites",
     "unifi_collect_devices.py": "unifi_collect_devices",
+    "unifi_network.py": "unifi_network",
 }
 
 

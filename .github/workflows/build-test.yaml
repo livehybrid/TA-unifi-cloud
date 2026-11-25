@@ -7,8 +7,8 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
   schedule:
-    # Weekly real-API canary — the integration suite runs with the real
-    # UniFi key on this cadence without burning minutes on every push.
+    # Weekly run: unit, mock integration and both live jobs, so main's health
+    # (and the real APIs' shape) is always current.
     - cron: "47 6 * * 1"
 permissions:
   pull-requests: write
@@ -26,8 +26,7 @@ concurrency:
 
 jobs:
   package:
-    # On the weekly schedule only the integration suite (with the real key)
-    # runs; skipping package makes its other dependents skip too.
+    # Skipped on the weekly schedule (tests only); its dependents skip too.
     if: github.event_name != 'schedule'
     # ubuntu-24.04 because ubuntu-latest (26.04) has no Python 3.9, which the
     # add-on build and Splunk 10.1-and-earlier parity need.
@@ -38,19 +37,37 @@ jobs:
         with:
           python-version: "3.9"
 
+  unit-test:
+    # The collector (package/bin/unifi_client.py) against the synthetic mock in
+    # tests/mock: pagination, unsupported endpoints, an offline console, auth
+    # failure, TLS verification on and off. No Splunk, no network, no secrets.
+    # 3.9 because Splunk 10.1 and earlier run the add-on on it.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest "requests>=2.32.5,<2.33.0"
+      - run: pytest tests/unit -v -ra -p no:cacheprovider
+
   integration-test:
     name: integration-test (splunk-docker)
-    # No needs: on the weekly schedule this is the only job (it builds the
-    # add-on itself); on pushes it runs alongside package as before.
-    # Dependabot actors get no egress/secrets, so the live Splunk E2E can only
-    # fail for them. CLI AppInspect still covers Dependabot PRs.
+    # Real Splunk in Docker against the synthetic mock (docker-compose `mock`
+    # service): Cloud and Local accounts, every resource, exact event counts.
+    # No secrets, so it runs on every push. Dependabot actors still skip it
+    # (estate policy: their PRs need build + AppInspect only).
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        # 10.0 is the oldest Splunk this add-on is tested on; 10.6.0 is current
-        # (Postgres-backed KV store, Python 3.13 alongside 3.9).
+        # 10.0 is the oldest Splunk this add-on is tested on (Python 3.9);
+        # 10.6.0 is current (Python 3.13).
         splunk: ["10.0", "10.6.0"]
     steps:
       - name: Checkout code
@@ -66,52 +83,13 @@ jobs:
 
       - name: Build add-on into stage/
         shell: bash
-        run: |
-          ucc-gen build --source package --ta-version 1.1.0
-          rm -rf stage && mkdir -p stage
-          cp -r output/TA-unifi-cloud stage/TA-unifi-cloud
-          # The test container's splunk user (a different uid) must read the app
-          # and write local/inputs.conf + checkpoints into the bind mount. Wide
-          # perms are fine on this throwaway copy — it is never the artefact.
-          chmod -R 777 stage/TA-unifi-cloud
+        run: make -C docker build
 
-      - name: Start Splunk (wait for health)
+      - name: Start Splunk and the mock (wait for health)
         working-directory: docker
         env:
           SPLUNK_IMAGE_TAG: ${{ matrix.splunk }}
         run: docker compose up -d --wait --wait-timeout 360
-
-      - name: Load UNIFI_API_KEY from 1Password
-        # Real-key runs are limited to the weekly schedule, manual dispatch,
-        # main pushes and tags — branch pushes stay keyless (the live test
-        # skips) so every push doesn't hit the real UniFi API.
-        if: >-
-          ${{ github.event_name == 'schedule' ||
-              github.event_name == 'workflow_dispatch' ||
-              github.ref == 'refs/heads/main' ||
-              startsWith(github.ref, 'refs/tags/') }}
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-        shell: bash
-        run: |
-          if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-            echo "OP_SERVICE_ACCOUNT_TOKEN unavailable — live test will skip." >&2
-            exit 0
-          fi
-          curl -sSfL https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -o /tmp/op.zip
-          (cd /tmp && unzip -oq op.zip op && sudo mv op /usr/local/bin/op)
-          KEY=""
-          # The item title has been referred to as several spellings — try them.
-          for item in unify unifi UniFi my.unifi; do
-            KEY=$(op read "op://cicd/$item/password" 2>/dev/null) && [ -n "$KEY" ] && break
-          done
-          if [ -z "$KEY" ]; then
-            echo "no matching UniFi item found in the cicd vault (tried unify/unifi/UniFi/my.unifi) — live test will skip." >&2
-            exit 0
-          fi
-          # op-loaded values are NOT auto-masked — mask before exporting.
-          echo "::add-mask::$KEY"
-          echo "UNIFI_API_KEY=$KEY" >> "$GITHUB_ENV"
 
       - name: Run integration suite
         env:
@@ -119,19 +97,90 @@ jobs:
           SPLUNK_USER: admin
           SPLUNK_PASSWORD: Changeme1!
           SPLUNK_CONTAINER: ta_unifi_cloud_splunk
-        run: pytest tests/ -v -ra
+        run: pytest tests/ --ignore=tests/live --ignore=tests/unit -v -ra -p no:cacheprovider
 
       - name: Splunk logs on failure
+        # Mock data only: synthetic, safe to print.
         if: failure()
         working-directory: docker
         run: |
           docker compose logs --tail 300 splunk || true
-          docker exec ta_unifi_cloud_splunk tail -n 300 /opt/splunk/var/log/splunk/splunkd.log || true
+          docker exec ta_unifi_cloud_splunk sh -c 'tail -n 200 /opt/splunk/var/log/splunk/splunkd.log; tail -n 200 /opt/splunk/var/log/splunk/ta-unifi-cloud_*.log' || true
 
       - name: Tear down
         if: always()
         working-directory: docker
         run: docker compose down -v || true
+
+  live-cloud:
+    # Real api.ui.com through the add-on in real Splunk (Cloud account, every
+    # console via the connector). Only on main pushes, the weekly schedule and
+    # manual runs; never for pull requests or other branches. Not a release
+    # gate. William's network data is private: the test asserts and prints
+    # counts and field names only, runs with --tb=no, and no log is dumped.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install --upgrade splunk-add-on-ucc-framework pytest
+      - run: make -C docker build
+      - name: Start Splunk
+        working-directory: docker
+        env:
+          SPLUNK_IMAGE_TAG: "10.6.0"
+        run: docker compose up -d --wait --wait-timeout 360
+      - name: Live cloud end to end (counts only)
+        env:
+          UNIFI_API_KEY: ${{ secrets.UNIFI_CLOUD_API_KEY }}
+          LIVE_SUMMARY: ${{ runner.temp }}/live-cloud-summary.json
+          SPLUNK_MGMT_URL: https://127.0.0.1:8089
+          SPLUNK_PASSWORD: Changeme1!
+          SPLUNK_CONTAINER: ta_unifi_cloud_splunk
+        run: |
+          if [ -z "$UNIFI_API_KEY" ]; then echo "UNIFI_CLOUD_API_KEY secret missing" >&2; exit 1; fi
+          pytest tests/live/test_live_cloud.py -v --tb=no -rN -p no:cacheprovider -p no:warnings
+      - name: Summary (counts and field names only)
+        if: always()
+        run: cat "${{ runner.temp }}/live-cloud-summary.json" 2>/dev/null || echo "no summary written"
+      - name: Tear down
+        if: always()
+        working-directory: docker
+        run: docker compose down -v >/dev/null 2>&1 || true
+
+  live-local:
+    # The add-on's collector against William's own console from a self-hosted
+    # runner on his LAN (label unifi-local), without Splunk: the full
+    # Splunk path is proven by integration-test (mock) and live-cloud. Same
+    # event rules as live-cloud: never pull requests, never other branches.
+    # live_local.py prints counts and field names only, never a traceback.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: [self-hosted, unifi-local]
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Live local collector check (counts only)
+        env:
+          UNIFI_LOCAL_URL: ${{ secrets.UNIFI_LOCAL_URL }}
+          UNIFI_LOCAL_API_KEY: ${{ secrets.UNIFI_LOCAL_API_KEY }}
+          UNIFI_LOCAL_VERIFY: "0"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 tests/live/live_local.py
 
   appinspect:
     name: quality-appinspect
