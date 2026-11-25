@@ -70,7 +70,8 @@ CONSOLES = {
 }
 LOCAL_CONSOLE = "mock-console-a"
 # Device statistics answer 404 for this one device (it is not adopted).
-NO_STATS_DEVICE = "site-a1-device-6"
+# Mid-list on purpose: a collector that aborts at it loses the devices after it.
+NO_STATS_DEVICE = "site-a1-device-3"
 
 RESOURCES = ("devices", "clients", "networks", "wifi/broadcasts", "firewall/zones", "firewall/policies")
 
