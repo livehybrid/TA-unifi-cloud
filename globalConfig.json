@@ -372,7 +372,7 @@
               "type": "multipleSelect",
               "label": "Resources",
               "field": "resources",
-              "required": true,
+              "required": false,
               "defaultValue": "sites,devices,device_statistics,clients,networks,wifi_broadcasts,firewall_zones,firewall_policies",
               "options": {
                 "delimiter": ",",
@@ -411,7 +411,7 @@
                   }
                 ]
               },
-              "help": "What to collect on each run. Every run is a full snapshot. Endpoints a console does not support are skipped."
+              "help": "What to collect on each run (empty means all). Every run is a full snapshot. Endpoints a console does not support are skipped."
             },
             {
               "type": "singleSelect",
