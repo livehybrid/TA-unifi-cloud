@@ -1,0 +1,383 @@
+/*
+ * Generic Playwright helpers for UCC-built Splunk add-ons.
+ *
+ * Nothing in this file knows about any one add-on: the app name, page titles,
+ * field labels and conf names are all passed in by the spec files. Copy the
+ * whole e2e/ucc/ directory into another UCC TA unchanged and write that TA's
+ * own specs beside it (see the adoption notes at the bottom of this file).
+ *
+ * Two rules the helpers follow, and specs built on them should keep:
+ *
+ *  - The UI is driven the way a person drives it: controls are found by their
+ *    visible label and role, never by the UCC field name. A defect that maps a
+ *    label to the wrong field therefore reaches the assertion instead of being
+ *    hidden by a test that looks the control up under the same wrong name.
+ *
+ *  - What the UI saved is read back from splunkd's raw configuration endpoints
+ *    (configs/conf-<file>), a route the UCC pages and REST handlers never use.
+ *    Reading back through the add-on's own <restRoot>_* handler would agree
+ *    with any bug in that handler.
+ *
+ * Environment: SPLUNK_WEB_URL (Playwright baseURL), SPLUNK_MGMT_URL,
+ * SPLUNK_USER, SPLUNK_PASSWORD. Defaults suit the CI docker harness.
+ */
+const { expect, request } = require('@playwright/test');
+
+const MGMT_URL = (process.env.SPLUNK_MGMT_URL || 'https://localhost:8089').replace(/\/$/, '');
+const USER = process.env.SPLUNK_USER || 'admin';
+const PASS = process.env.SPLUNK_PASSWORD || 'Changeme1!';
+const MASK = '******';
+
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// ---------------------------------------------------------------------------
+// Session and navigation
+// ---------------------------------------------------------------------------
+
+/** Log in to Splunk Web. Waits on the URL pathname: the login page's own URL
+ *  carries ?return_to=/app/..., so a regex over the whole URL matches before
+ *  sign-in has finished (Data Dictionary CI, 10.6, Oct 2026). */
+async function login(page, user = USER, pw = PASS) {
+    await page.goto('/en-US/account/login');
+    await page.locator('input[name="username"]').fill(user);
+    await page.locator('input[name="password"]').fill(pw);
+    await page.locator('input[name="password"]').press('Enter');
+    await page.waitForURL((u) => !/\/account\/login/.test(u.pathname), { timeout: 60000 });
+}
+
+/** Collect uncaught page errors and console errors that come from the add-on's
+ *  own static files. Splunk's own chrome logs unrelated noise, so only errors
+ *  whose source or stack names the app count. Call before navigating. */
+function watchAppErrors(page, app) {
+    const errors = [];
+    const ours = (s) => String(s || '').includes(`/app/${app}/`) || String(s || '').includes(`/static/app/${app}`);
+    page.on('pageerror', (err) => {
+        if (ours(err.stack) || ours(err.message)) errors.push(`pageerror: ${err.message}`);
+    });
+    page.on('console', (msg) => {
+        if (msg.type() === 'error' && ours(msg.location().url)) errors.push(`console: ${msg.text()}`);
+    });
+    return {
+        errors,
+        assertNone: () => expect(errors, `app errors in the browser:\n${errors.join('\n')}`).toEqual([]),
+    };
+}
+
+/** Open a UCC page (configuration, inputs, ...) and wait until it has drawn
+ *  its title, so the page bundle loaded and globalConfig parsed. */
+async function gotoUccPage(page, app, view, title) {
+    await page.goto(`/en-US/app/${app}/${view}`);
+    await expect(page.getByText(title, { exact: true }).first()).toBeVisible({ timeout: 60000 });
+}
+
+/** Select a Configuration page tab by its visible title. */
+async function openTab(page, title) {
+    const tab = page.getByRole('tab', { name: title, exact: true });
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+}
+
+// ---------------------------------------------------------------------------
+// Forms
+// ---------------------------------------------------------------------------
+
+/** A regex for a control's accessible name: react-ui renders the required
+ *  marker as a "*" span inside the <label>, before the text. */
+const labelRe = (label) => new RegExp(`^\\s*\\*?\\s*${escapeRe(label)}\\s*\\*?\\s*$`);
+
+/** The Page that owns `scope` (a Page or a Locator). Locators passed to
+ *  filter({ has }) must be built from the page, not from the scope. */
+const pageOf = (scope) => (typeof scope.page === 'function' ? scope.page() : scope);
+
+/** The control-group wrapper (react-ui ControlGroup) whose <label> reads `label`. */
+function controlGroup(scope, label) {
+    return scope.locator('[data-test="control-group"]')
+        .filter({ has: pageOf(scope).locator('label').filter({ hasText: labelRe(label) }) });
+}
+
+/** The input control labelled `label` inside `scope` (a page, a dialog or a
+ *  tab panel). UCC wraps every control in a ControlGroup whose <label> carries
+ *  the globalConfig label, linked to the input by aria-labelledby; the
+ *  structural route (the wrapper that holds that label) is the fallback. The
+ *  UCC field name is never consulted.
+ */
+function control(scope, label) {
+    const byAria = scope.getByRole('textbox', { name: labelRe(label) });
+    const byStructure = controlGroup(scope, label).locator('input, textarea');
+    return byAria.or(byStructure).first();
+}
+
+async function fillText(scope, label, value) {
+    const box = control(scope, label);
+    await box.click();
+    await box.fill('');
+    await box.fill(String(value));
+    await expect(box).toHaveValue(String(value));
+}
+
+async function readText(scope, label) {
+    return control(scope, label).inputValue();
+}
+
+/** Pick `option` from the single-select labelled `label`. */
+async function selectOption(page, scope, label, option) {
+    const toggle = scope.getByRole('combobox', { name: labelRe(label) })
+        .or(controlGroup(scope, label).locator('button, [role="combobox"]'))
+        .first();
+    await toggle.click();
+    await page.getByRole('option', { name: option, exact: true }).click();
+}
+
+/** Fill several text controls: `values` maps visible label -> value. */
+async function fillForm(scope, values) {
+    for (const [label, value] of Object.entries(values)) await fillText(scope, label, value);
+}
+
+/** Press Save on a Configuration tab and wait for the POST it makes to return.
+ *  Returns the HTTP status (UCC answers a rejected value with 4xx/5xx). */
+async function saveConfigTab(page) {
+    const resp = page.waitForResponse((r) => r.request().method() === 'POST' && /\/servicesNS\//.test(r.url()), {
+        timeout: 30000,
+    });
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    return (await resp).status();
+}
+
+// ---------------------------------------------------------------------------
+// Inputs page
+// ---------------------------------------------------------------------------
+
+const dialog = (page) => page.getByRole('dialog');
+
+/** Open the add dialog for an input service. With one service UCC shows a
+ *  plain "Create New Input" button; with several, a menu of service titles. */
+async function openCreateInput(page, serviceTitle) {
+    await page.getByRole('button', { name: 'Create New Input' }).click();
+    if (!(await dialog(page).isVisible().catch(() => false))) {
+        const item = page.getByRole('menuitem', { name: serviceTitle }).first();
+        if (await item.isVisible().catch(() => false)) await item.click();
+    }
+    await expect(dialog(page)).toBeVisible();
+    return dialog(page);
+}
+
+/** Press the dialog's submit button (Add / Update / Save) and wait for it to
+ *  close. If it stays open the form error UCC shows is in the failure message. */
+async function submitDialog(page, buttonName) {
+    const d = dialog(page);
+    await d.getByRole('button', { name: buttonName, exact: true }).click();
+    try {
+        await expect(d).toBeHidden({ timeout: 30000 });
+    } catch (e) {
+        const text = (await d.innerText().catch(() => '')).slice(0, 800);
+        throw new Error(`dialog did not close after "${buttonName}"; it shows:\n${text}`);
+    }
+}
+
+/** The table row whose cell text is exactly `name`. */
+function inputRow(page, name) {
+    return page.locator('tr').filter({ has: page.getByRole('cell', { name, exact: true }) });
+}
+
+async function rowAction(page, name, action) {
+    await inputRow(page, name).getByRole('button', { name: action, exact: true }).click();
+}
+
+/** Flip the row's Active/Inactive switch and wait for it to settle. */
+async function toggleRow(page, name) {
+    const sw = inputRow(page, name).getByRole('switch');
+    const before = await sw.getAttribute('aria-checked');
+    await sw.click();
+    await expect(sw).not.toHaveAttribute('aria-checked', before, { timeout: 30000 });
+    await expect(sw).toBeEnabled({ timeout: 30000 });
+}
+
+// ---------------------------------------------------------------------------
+// REST: read back what the UI wrote, by a route the UI never uses
+// ---------------------------------------------------------------------------
+
+async function restClient() {
+    const api = await request.newContext({
+        baseURL: MGMT_URL,
+        ignoreHTTPSErrors: true,
+        httpCredentials: { username: USER, password: PASS, send: 'always' },
+    });
+    const q = (s) => encodeURIComponent(s);
+    const client = {
+        api,
+        async get(path, params = {}) {
+            const r = await api.get(path, { params: { output_mode: 'json', ...params } });
+            return { status: r.status(), body: await r.text() };
+        },
+        async post(path, form) {
+            const r = await api.post(path, { form: { output_mode: 'json', ...form } });
+            return { status: r.status(), body: await r.text() };
+        },
+        async del(path) {
+            const r = await api.delete(path, { params: { output_mode: 'json' } });
+            return { status: r.status(), body: await r.text() };
+        },
+        /** Content of [stanza] in <conf>.conf as splunkd merges it, or null. */
+        async confStanza(app, conf, stanza) {
+            const r = await client.get(`/servicesNS/nobody/${app}/configs/conf-${conf}/${q(stanza)}`);
+            if (r.status === 404) return null;
+            expect(r.status, `GET conf-${conf}/${stanza}: ${r.body.slice(0, 300)}`).toBe(200);
+            return JSON.parse(r.body).entry[0].content;
+        },
+        /** Write keys into [stanza] through the raw conf endpoint (setup/restore). */
+        async setConf(app, conf, stanza, values) {
+            const r = await client.post(`/servicesNS/nobody/${app}/configs/conf-${conf}/${q(stanza)}`, values);
+            expect(r.status, `POST conf-${conf}/${stanza}: ${r.body.slice(0, 300)}`).toBe(200);
+        },
+        /** [scheme://name] in inputs.conf, or null once it is gone. */
+        inputStanza(app, scheme, name) {
+            return client.confStanza(app, 'inputs', `${scheme}://${name}`);
+        },
+        /** Remove an input stanza if a failed test left it behind. */
+        async deleteInput(app, scheme, name) {
+            await client.del(`/servicesNS/nobody/${app}/configs/conf-inputs/${q(`${scheme}://${name}`)}`);
+        },
+        /** Blocking search; returns the result rows. */
+        async search(spl, earliest = '-15m') {
+            const r = await api.post('/services/search/jobs/export', {
+                form: { search: spl.trim().startsWith('|') ? spl : `search ${spl}`, output_mode: 'json',
+                    earliest_time: String(earliest), latest_time: 'now' },
+            });
+            expect(r.ok(), `search failed (${r.status()}): ${spl}`).toBeTruthy();
+            return (await r.text()).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+                .filter((o) => o.result && !o.preview).map((o) => o.result);
+        },
+        dispose: () => api.dispose(),
+    };
+    return client;
+}
+
+/** Splunk writes booleans as 1/0, true/false or t/f depending on the writer. */
+const isTrue = (v) => ['1', 'true', 't', 'yes', 'y'].includes(String(v).toLowerCase());
+
+/** Poll a conf stanza until `predicate(content)` holds; fail with the last seen
+ *  content. Saves are synchronous in splunkd, but this absorbs the UI's
+ *  debounce and the conf reload. */
+async function expectConf(read, predicate, what, timeout = 20000) {
+    let last;
+    await expect.poll(async () => {
+        last = await read();
+        return predicate(last);
+    }, { message: `${what}; last seen: ${JSON.stringify(last)}`, timeout }).toBe(true);
+    return last;
+}
+
+/** True if `secret` is anywhere in the page: the HTML, or the value of any
+ *  input or textarea (page.content() does not show typed or prefilled values). */
+async function domHolds(page, secret) {
+    const values = await page.locator('input, textarea').evaluateAll((els) => els.map((e) => e.value));
+    const html = await page.content();
+    return values.some((v) => String(v).includes(secret)) || html.includes(secret);
+}
+
+/** The storage/passwords entries UCC keeps for [stanza] of <conf>.conf. UCC
+ *  (solnlib) stores every encrypted field of a stanza as one JSON object under
+ *  realm __REST_CREDENTIAL__#<app>#configs/conf-<conf>, username <stanza>.
+ *  Read from splunkd's storage/passwords endpoint, which the UCC pages never
+ *  call. Returns the content of the matching entries. */
+async function credentialEntries(rest, app, conf, stanza) {
+    const r = await rest.get(`/servicesNS/nobody/${app}/storage/passwords`, { count: '0' });
+    expect(r.status, `GET storage/passwords: ${r.status}`).toBe(200);
+    const realm = `__REST_CREDENTIAL__#${app}#configs/conf-${conf}`;
+    return JSON.parse(r.body).entry.map((e) => e.content)
+        .filter((c) => c.realm === realm && c.username === stanza);
+}
+
+/** Realm/username pairs in storage/passwords for this app (never passwords),
+ *  for failure messages. */
+async function credentialIndex(rest, app) {
+    const r = await rest.get(`/servicesNS/nobody/${app}/storage/passwords`, { count: '0' });
+    return r.status === 200
+        ? JSON.parse(r.body).entry.map((e) => `${e.content.realm} / ${e.content.username}`).join('; ') : `HTTP ${r.status}`;
+}
+
+/** The secret saved in `field` of [stanza] is held in storage/passwords. */
+async function expectSecretStored(rest, { app, conf, stanza, field, secret }) {
+    let entries = [];
+    await expect.poll(async () => {
+        entries = await credentialEntries(rest, app, conf, stanza);
+        return entries.length;
+    }, { message: `storage/passwords has no credential for ${conf} [${stanza}]; it holds: ${await credentialIndex(rest, app)}`,
+        timeout: 20000 }).toBe(1);
+    let stored = null;
+    try { stored = JSON.parse(entries[0].clear_password); } catch (e) { stored = null; }
+    // Compare without printing: the message names the field, never the value.
+    expect(!!stored && stored[field] === secret,
+        `storage/passwords credential for ${conf} [${stanza}] does not hold the saved ${field}`).toBe(true);
+}
+
+/** No credential is left in storage/passwords for [stanza] (after a delete). */
+async function expectSecretGone(rest, { app, conf, stanza }) {
+    await expect.poll(async () => (await credentialEntries(rest, app, conf, stanza)).length,
+        { message: `storage/passwords still holds a credential for ${conf} [${stanza}]`, timeout: 20000 }).toBe(0);
+}
+
+/**
+ * An encrypted field's secret must not come back, and must be where UCC keeps
+ * secrets. After saving `secret` into the field labelled `label`:
+ *  - the page as it stands does not hold the plain secret anywhere in the DOM
+ *    (input values included, which page.content() does not show);
+ *  - the add-on's own REST handler returns the mask, not the secret;
+ *  - the conf file itself does not hold it in plain text (UCC leaves the mask
+ *    in the conf), read from the raw configs/conf-* endpoint;
+ *  - storage/passwords holds it (expectSecretStored).
+ * `handlerPath` is e.g. /servicesNS/nobody/<app>/<restRoot>_account/<name>.
+ * Reload the page and call domHolds() again to cover "after reload".
+ */
+async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPath, field, secret }) {
+    expect(await domHolds(page, secret), `secret for ${field} is in the DOM`).toBe(false);
+    const viaHandler = await rest.get(handlerPath);
+    expect(viaHandler.status, `GET ${handlerPath}: ${viaHandler.status}`).toBe(200);
+    expect(viaHandler.body.includes(secret), `${handlerPath} echoes the secret for ${field}`).toBe(false);
+    const content = JSON.parse(viaHandler.body).entry[0].content;
+    expect(content[field] === MASK, `${handlerPath} does not mask ${field}`).toBe(true);
+    const raw = await rest.confStanza(app, conf, stanza);
+    expect(raw && raw[field], `${conf}.conf [${stanza}] has no ${field}`).toBeTruthy();
+    expect(String(raw[field]).includes(secret), `${conf}.conf [${stanza}] stores ${field} in plain text`).toBe(false);
+    await expectSecretStored(rest, { app, conf, stanza, field, secret });
+}
+
+/** Tick or untick the checkbox labelled `label` (react-ui Switch, checkbox
+ *  appearance: role checkbox or switch with aria-checked). */
+async function setCheckbox(scope, label, checked) {
+    const box = controlGroup(scope, label).locator('[role="checkbox"], [role="switch"], input[type="checkbox"]').first();
+    const now = async () => {
+        const aria = await box.getAttribute('aria-checked');
+        return aria !== null ? aria === 'true' : box.isChecked();
+    };
+    if ((await now()) !== checked) await box.click();
+    await expect.poll(now, { message: `${label} did not become ${checked}` }).toBe(checked);
+}
+
+module.exports = {
+    MGMT_URL, USER, PASS, MASK,
+    login, watchAppErrors, gotoUccPage, openTab,
+    control, fillText, readText, selectOption, fillForm, saveConfigTab,
+    dialog, openCreateInput, submitDialog, inputRow, rowAction, toggleRow,
+    restClient, isTrue, expectConf, expectSecretNotEchoed, controlGroup, labelRe,
+    domHolds, credentialEntries, expectSecretStored, expectSecretGone, setCheckbox,
+};
+
+/*
+ * Adopting this in another UCC add-on
+ * -----------------------------------
+ * 1. Copy e2e/ucc/ (this file), e2e/package.json, e2e/package-lock.json and
+ *    e2e/playwright.config.js into the TA.
+ * 2. Write e2e/<ta>-configuration.spec.js and e2e/<ta>-inputs.spec.js using the
+ *    labels and conf names from that TA's globalConfig.json (read the JSON in
+ *    the spec for labels and validator messages: it is the spec of the UI, not
+ *    the code under test).
+ * 3. Settings tabs save to <restRoot lower-cased>_settings.conf; account tabs to
+ *    <restRoot lower-cased>_account.conf; inputs to inputs.conf as
+ *    [<service name>://<input name>].
+ * 4. Add the Playwright steps from TA-airspace-watch's integration-test job
+ *    after the pytest step, so the browser suite shares the Splunk the
+ *    integration legs already start (10.0 and 10.6.0).
+ * 5. Break one field mapping and one handler on a mutant-* branch and watch the
+ *    specs go red before trusting them.
+ */
