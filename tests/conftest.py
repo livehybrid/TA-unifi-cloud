@@ -157,3 +157,26 @@ def splunk():
             pass
         time.sleep(3)
     return c
+
+
+# --- Required live tests -------------------------------------------------
+# A live test that skips (missing key, unreachable upstream, missing mock) is
+# green in CI, so a lost secret or an upstream outage would hide behind a pass.
+# Jobs that are meant to exercise the real thing set REQUIRE_LIVE to a
+# comma-separated list of node-id substrings; any matching test that skips is
+# reported as a failure instead, with its skip reason.
+import os as _live_os
+
+import pytest as _live_pytest
+
+_REQUIRE_LIVE = [p.strip() for p in _live_os.environ.get("REQUIRE_LIVE", "").split(",") if p.strip()]
+
+
+@_live_pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if rep.skipped and _REQUIRE_LIVE and any(p in item.nodeid for p in _REQUIRE_LIVE):
+        reason = rep.longrepr[2] if isinstance(rep.longrepr, tuple) else str(rep.longrepr)
+        rep.outcome = "failed"
+        rep.longrepr = f"REQUIRED LIVE TEST SKIPPED (REQUIRE_LIVE set): {reason}"
