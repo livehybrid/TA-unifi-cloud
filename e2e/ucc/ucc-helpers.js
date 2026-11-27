@@ -353,16 +353,37 @@ async function expectSecretGone(rest, { app, conf, stanza, realms }) {
  * Reload the page and call domHolds() again to cover "after reload".
  */
 async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPath, field, secret, realms, credStanza }) {
-    expect(await domHolds(page, secret), `secret for ${field} is in the DOM`).toBe(false);
+    // Every check runs and every failure is reported together, so a defect
+    // shows each place the secret leaked, not just the first one checked.
+    const failures = [];
+    if (await domHolds(page, secret)) failures.push(`secret for ${field} is in the DOM`);
     const viaHandler = await rest.get(handlerPath);
-    expect(viaHandler.status, `GET ${handlerPath}: ${viaHandler.status}`).toBe(200);
-    expect(viaHandler.body.includes(secret), `${handlerPath} echoes the secret for ${field}`).toBe(false);
-    const content = JSON.parse(viaHandler.body).entry[0].content;
-    expect(content[field] === MASK, `${handlerPath} does not mask ${field}`).toBe(true);
+    if (viaHandler.status !== 200) {
+        failures.push(`GET ${handlerPath}: ${viaHandler.status}`);
+    } else {
+        if (viaHandler.body.includes(secret)) failures.push(`${handlerPath} echoes the secret for ${field}`);
+        const content = JSON.parse(viaHandler.body).entry[0].content;
+        if (content[field] !== MASK) failures.push(`${handlerPath} does not mask ${field}`);
+    }
     const raw = await rest.confStanza(app, conf, stanza);
-    expect(raw && raw[field], `${conf}.conf [${stanza}] has no ${field}`).toBeTruthy();
-    expect(String(raw[field]).includes(secret), `${conf}.conf [${stanza}] stores ${field} in plain text`).toBe(false);
-    await expectSecretStored(rest, { app, conf, stanza: credStanza || stanza, field, secret, realms });
+    if (!raw || !raw[field]) failures.push(`${conf}.conf [${stanza}] has no ${field}`);
+    else if (String(raw[field]).includes(secret)) failures.push(`${conf}.conf [${stanza}] stores ${field} in plain text`);
+    let stored = null;
+    let entries = [];
+    const deadline = Date.now() + 20000;
+    do {
+        entries = await credentialEntries(rest, app, conf, credStanza || stanza, realms);
+        stored = parseCredential(entries);
+        if (stored && stored[field] === secret) break;
+        await page.waitForTimeout(1000);
+    } while (Date.now() < deadline);
+    if (!entries.length) {
+        failures.push(`storage/passwords has no credential for ${conf} [${credStanza || stanza}]; it holds: ${await credentialIndex(rest, app)}`);
+    } else if (!stored || stored[field] !== secret) {
+        failures.push(`storage/passwords credential for ${conf} [${credStanza || stanza}] does not hold the saved ${field}`
+            + ` (${entries.length} chunk(s), JSON ${stored ? 'with keys ' + Object.keys(stored).join(',') : 'unparsable'})`);
+    }
+    expect(failures, `secret checks for ${field}:\n${failures.join('\n')}`).toEqual([]);
 }
 
 /** Tick or untick the checkbox labelled `label` (react-ui Switch, checkbox
