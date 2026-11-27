@@ -141,6 +141,7 @@ jobs:
         run: docker compose up -d --wait --wait-timeout 360
       - name: Live cloud end to end (counts only)
         env:
+          REQUIRE_LIVE: "tests/live/"
           UNIFI_API_KEY: ${{ secrets.UNIFI_CLOUD_API_KEY }}
           LIVE_SUMMARY: ${{ runner.temp }}/live-cloud-summary.json
           SPLUNK_MGMT_URL: https://127.0.0.1:8089
