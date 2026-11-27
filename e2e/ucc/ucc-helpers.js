@@ -278,20 +278,37 @@ async function domHolds(page, secret) {
 /** The storage/passwords entries UCC keeps for [stanza] of <conf>.conf. UCC
  *  (solnlib CredentialManager) stores every encrypted field of a stanza as one
  *  JSON object under realm __REST_CREDENTIAL__#<app>#configs/conf-<conf>,
- *  split into chunks named <stanza>``splunk_cred_sep``<n> with an end mark
- *  after the last one. Read from splunkd's storage/passwords endpoint, which
+ *  split into chunks named <stanza>``splunk_cred_sep``<n>, the last of which
+ *  holds only solnlib's end mark. Read from splunkd's storage/passwords endpoint, which
  *  the UCC pages never call. Returns the chunks in order. */
 const CRED_SEP = '``splunk_cred_sep``';
-const CRED_END = '``splunk_end``';
-async function credentialEntries(rest, app, conf, stanza) {
+// solnlib CredentialManager.END_MARK: the last chunk holds only this.
+const CRED_END = '``splunk_cred_sep``S``splunk_cred_sep``P``splunk_cred_sep``L``splunk_cred_sep``'
+    + 'U``splunk_cred_sep``N``splunk_cred_sep``K``splunk_cred_sep``';
+async function credentialEntries(rest, app, conf, stanza, realms) {
     const r = await rest.get(`/servicesNS/nobody/${app}/storage/passwords`, { count: '0' });
     expect(r.status, `GET storage/passwords: ${r.status}`).toBe(200);
-    const realm = `__REST_CREDENTIAL__#${app}#configs/conf-${conf}`;
+    // An input's secrets may sit under another endpoint than configs/conf-<conf>;
+    // pass `realms` to accept those as well.
+    const want = [`__REST_CREDENTIAL__#${app}#configs/conf-${conf}`, ...(realms || [])];
     const chunk = (u) => (u === stanza ? 0 : (String(u).startsWith(stanza + CRED_SEP)
         ? Number(String(u).slice(stanza.length + CRED_SEP.length)) : NaN));
     return JSON.parse(r.body).entry.map((e) => e.content)
-        .filter((c) => c.realm === realm && Number.isInteger(chunk(c.username)))
+        .filter((c) => want.includes(c.realm) && Number.isInteger(chunk(c.username)))
         .sort((x, y) => chunk(x.username) - chunk(y.username));
+}
+
+/** The JSON object solnlib stored across `entries` (from credentialEntries),
+ *  or null if the chunks do not reassemble into one. */
+function parseCredential(entries) {
+    const parts = entries.map((c) => String(c.clear_password));
+    if (parts.length && parts[parts.length - 1] === CRED_END) parts.pop();
+    try { return JSON.parse(parts.join('')); } catch (e) { return null; }
+}
+
+/** The stored credential object for [stanza], or null. */
+async function readCredential(rest, app, conf, stanza, realms) {
+    return parseCredential(await credentialEntries(rest, app, conf, stanza, realms));
 }
 
 /** Realm/username pairs in storage/passwords for this app (never passwords),
@@ -303,17 +320,14 @@ async function credentialIndex(rest, app) {
 }
 
 /** The secret saved in `field` of [stanza] is held in storage/passwords. */
-async function expectSecretStored(rest, { app, conf, stanza, field, secret }) {
+async function expectSecretStored(rest, { app, conf, stanza, field, secret, realms }) {
     let entries = [];
     await expect.poll(async () => {
-        entries = await credentialEntries(rest, app, conf, stanza);
+        entries = await credentialEntries(rest, app, conf, stanza, realms);
         return entries.length > 0;
     }, { message: `storage/passwords has no credential for ${conf} [${stanza}]; it holds: ${await credentialIndex(rest, app)}`,
         timeout: 20000 }).toBe(true);
-    let joined = entries.map((c) => c.clear_password).join('');
-    if (joined.endsWith(CRED_END)) joined = joined.slice(0, -CRED_END.length);
-    let stored = null;
-    try { stored = JSON.parse(joined); } catch (e) { stored = null; }
+    const stored = parseCredential(entries);
     // Compare without printing: the message names the field, never the value.
     expect(!!stored && stored[field] === secret,
         `storage/passwords credential for ${conf} [${stanza}] does not hold the saved ${field}` +
@@ -321,8 +335,8 @@ async function expectSecretStored(rest, { app, conf, stanza, field, secret }) {
 }
 
 /** No credential is left in storage/passwords for [stanza] (after a delete). */
-async function expectSecretGone(rest, { app, conf, stanza }) {
-    await expect.poll(async () => (await credentialEntries(rest, app, conf, stanza)).length,
+async function expectSecretGone(rest, { app, conf, stanza, realms }) {
+    await expect.poll(async () => (await credentialEntries(rest, app, conf, stanza, realms)).length,
         { message: `storage/passwords still holds a credential for ${conf} [${stanza}]`, timeout: 20000 }).toBe(0);
 }
 
@@ -338,7 +352,7 @@ async function expectSecretGone(rest, { app, conf, stanza }) {
  * `handlerPath` is e.g. /servicesNS/nobody/<app>/<restRoot>_account/<name>.
  * Reload the page and call domHolds() again to cover "after reload".
  */
-async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPath, field, secret }) {
+async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPath, field, secret, realms, credStanza }) {
     expect(await domHolds(page, secret), `secret for ${field} is in the DOM`).toBe(false);
     const viaHandler = await rest.get(handlerPath);
     expect(viaHandler.status, `GET ${handlerPath}: ${viaHandler.status}`).toBe(200);
@@ -348,7 +362,7 @@ async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPat
     const raw = await rest.confStanza(app, conf, stanza);
     expect(raw && raw[field], `${conf}.conf [${stanza}] has no ${field}`).toBeTruthy();
     expect(String(raw[field]).includes(secret), `${conf}.conf [${stanza}] stores ${field} in plain text`).toBe(false);
-    await expectSecretStored(rest, { app, conf, stanza, field, secret });
+    await expectSecretStored(rest, { app, conf, stanza: credStanza || stanza, field, secret, realms });
 }
 
 /** Tick or untick the checkbox labelled `label` (react-ui Switch, checkbox
@@ -369,7 +383,7 @@ module.exports = {
     control, fillText, readText, selectOption, fillForm, saveConfigTab,
     dialog, openCreateInput, submitDialog, inputRow, rowAction, toggleRow,
     restClient, isTrue, expectConf, expectSecretNotEchoed, controlGroup, labelRe,
-    domHolds, credentialEntries, expectSecretStored, expectSecretGone, setCheckbox,
+    domHolds, credentialEntries, readCredential, expectSecretStored, expectSecretGone, setCheckbox,
 };
 
 /*
