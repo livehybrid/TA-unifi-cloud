@@ -383,7 +383,9 @@ async function expectSecretNotEchoed(page, rest, { app, conf, stanza, handlerPat
         failures.push(`storage/passwords credential for ${conf} [${credStanza || stanza}] does not hold the saved ${field}`
             + ` (${entries.length} chunk(s), JSON ${stored ? 'with keys ' + Object.keys(stored).join(',') : 'unparsable'})`);
     }
-    expect(failures, `secret checks for ${field}:\n${failures.join('\n')}`).toEqual([]);
+    // Soft: the test still fails, but walks on, so later leak checks (reload, edit
+    // dialog) are reported too.
+    expect.soft(failures, `secret checks for ${field}:\n${failures.join('\n')}`).toEqual([]);
 }
 
 /** Tick or untick the checkbox labelled `label` (react-ui Switch, checkbox
