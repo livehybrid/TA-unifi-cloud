@@ -111,7 +111,7 @@ test('account: create, edit and delete; the API key never comes back and lives i
         await page.reload();
         await ucc.openTab(page, accountTab.title);
         await expect(ucc.inputRow(page, name)).toBeVisible();
-        expect(await ucc.domHolds(page, secret), 'API key in the DOM after reload').toBe(false);
+        expect.soft(await ucc.domHolds(page, secret), 'API key in the DOM after reload').toBe(false);
 
         // Edit: the dialog shows what was saved (never the key), the update lands
         // and the key is kept, not replaced by the mask the dialog shows.
@@ -119,7 +119,7 @@ test('account: create, edit and delete; the API key never comes back and lives i
         const e = ucc.dialog(page);
         await expect(e).toBeVisible();
         expect(await ucc.readText(e, ACCOUNT.url), 'edit shows url').toBe('https://mock:8443');
-        expect(await ucc.domHolds(page, secret), 'API key in the edit dialog').toBe(false);
+        expect.soft(await ucc.domHolds(page, secret), 'API key in the edit dialog').toBe(false);
         await ucc.fillText(e, ACCOUNT.url, 'https://mock:8443/e2e');
         await ucc.submitDialog(page, 'Update');
         const after = await ucc.expectConf(stanza, (c) => c && c.url === 'https://mock:8443/e2e', 'edited url saved');
