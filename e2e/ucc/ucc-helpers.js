@@ -276,16 +276,22 @@ async function domHolds(page, secret) {
 }
 
 /** The storage/passwords entries UCC keeps for [stanza] of <conf>.conf. UCC
- *  (solnlib) stores every encrypted field of a stanza as one JSON object under
- *  realm __REST_CREDENTIAL__#<app>#configs/conf-<conf>, username <stanza>.
- *  Read from splunkd's storage/passwords endpoint, which the UCC pages never
- *  call. Returns the content of the matching entries. */
+ *  (solnlib CredentialManager) stores every encrypted field of a stanza as one
+ *  JSON object under realm __REST_CREDENTIAL__#<app>#configs/conf-<conf>,
+ *  split into chunks named <stanza>``splunk_cred_sep``<n> with an end mark
+ *  after the last one. Read from splunkd's storage/passwords endpoint, which
+ *  the UCC pages never call. Returns the chunks in order. */
+const CRED_SEP = '``splunk_cred_sep``';
+const CRED_END = '``splunk_end``';
 async function credentialEntries(rest, app, conf, stanza) {
     const r = await rest.get(`/servicesNS/nobody/${app}/storage/passwords`, { count: '0' });
     expect(r.status, `GET storage/passwords: ${r.status}`).toBe(200);
     const realm = `__REST_CREDENTIAL__#${app}#configs/conf-${conf}`;
+    const chunk = (u) => (u === stanza ? 0 : (String(u).startsWith(stanza + CRED_SEP)
+        ? Number(String(u).slice(stanza.length + CRED_SEP.length)) : NaN));
     return JSON.parse(r.body).entry.map((e) => e.content)
-        .filter((c) => c.realm === realm && c.username === stanza);
+        .filter((c) => c.realm === realm && Number.isInteger(chunk(c.username)))
+        .sort((x, y) => chunk(x.username) - chunk(y.username));
 }
 
 /** Realm/username pairs in storage/passwords for this app (never passwords),
@@ -301,14 +307,17 @@ async function expectSecretStored(rest, { app, conf, stanza, field, secret }) {
     let entries = [];
     await expect.poll(async () => {
         entries = await credentialEntries(rest, app, conf, stanza);
-        return entries.length;
+        return entries.length > 0;
     }, { message: `storage/passwords has no credential for ${conf} [${stanza}]; it holds: ${await credentialIndex(rest, app)}`,
-        timeout: 20000 }).toBe(1);
+        timeout: 20000 }).toBe(true);
+    let joined = entries.map((c) => c.clear_password).join('');
+    if (joined.endsWith(CRED_END)) joined = joined.slice(0, -CRED_END.length);
     let stored = null;
-    try { stored = JSON.parse(entries[0].clear_password); } catch (e) { stored = null; }
+    try { stored = JSON.parse(joined); } catch (e) { stored = null; }
     // Compare without printing: the message names the field, never the value.
     expect(!!stored && stored[field] === secret,
-        `storage/passwords credential for ${conf} [${stanza}] does not hold the saved ${field}`).toBe(true);
+        `storage/passwords credential for ${conf} [${stanza}] does not hold the saved ${field}` +
+        ` (${entries.length} chunk(s), JSON ${stored ? 'with keys ' + Object.keys(stored).join(',') : 'unparsable'})`).toBe(true);
 }
 
 /** No credential is left in storage/passwords for [stanza] (after a delete). */
